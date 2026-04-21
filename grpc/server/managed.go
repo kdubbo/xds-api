@@ -5,22 +5,12 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	xdscreds "github.com/kdubbo/xds-api/grpc/credentials"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-
-	_ "github.com/kdubbo/xds-api/grpc/resolver"
-)
-
-const (
-	envXDSResolver    = "DUBBO_GRPC_XDS_RESOLVER"
-	envXDSCredentials = "DUBBO_GRPC_XDS_CREDENTIALS"
-	xdsSchemePrefix   = "xds:///"
 )
 
 // ManagedServer is a gRPC server whose transport credentials are managed
@@ -225,70 +215,14 @@ func DialOptions() []grpc.DialOption {
 // mTLS is applied automatically when the control plane's CDS response carries
 // a DUBBO_MUTUAL UpstreamTlsContext — the application passes no credentials.
 func DialContext(ctx context.Context, target string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
-	target, useXDS := normalizeDialTarget(target)
-	if !useXDS {
+	if !strings.HasPrefix(target, "xds:///") {
 		return nil, fmt.Errorf("xds: DialContext target must use xds:/// scheme, got %q", target)
 	}
-
-	allOpts := opts
-	if xdsCredentialsEnabled() {
-		allOpts = append(DialOptions(), opts...)
-	}
+	allOpts := append(DialOptions(), opts...)
 	return grpc.DialContext(ctx, target, allOpts...)
 }
 
 // Dial is the non-context variant of DialContext.
 func Dial(target string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	return DialContext(context.Background(), target, opts...)
-}
-
-func normalizeDialTarget(target string) (string, bool) {
-	if strings.HasPrefix(target, "xds://") {
-		return target, true
-	}
-
-	resolverPrefix := strings.TrimSpace(os.Getenv(envXDSResolver))
-	if resolverPrefix == "" || strings.EqualFold(resolverPrefix, "false") || resolverPrefix == "0" {
-		return target, false
-	}
-	if strings.EqualFold(resolverPrefix, "true") {
-		resolverPrefix = xdsSchemePrefix
-	}
-	if resolverPrefix != xdsSchemePrefix {
-		return target, false
-	}
-
-	name, ok := grpcTargetName(target)
-	if !ok {
-		return target, false
-	}
-	return resolverPrefix + name, true
-}
-
-func grpcTargetName(target string) (string, bool) {
-	if !strings.Contains(target, "://") {
-		name := strings.TrimLeft(target, "/")
-		return name, name != ""
-	}
-
-	u, err := url.Parse(target)
-	if err != nil {
-		return "", false
-	}
-	switch u.Scheme {
-	case "dns", "passthrough":
-	default:
-		return "", false
-	}
-
-	name := strings.TrimLeft(u.Path, "/")
-	if name == "" {
-		name = u.Opaque
-	}
-	return name, name != ""
-}
-
-func xdsCredentialsEnabled() bool {
-	value := strings.TrimSpace(os.Getenv(envXDSCredentials))
-	return value == "" || strings.EqualFold(value, "true") || value == "1"
 }
