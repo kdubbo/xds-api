@@ -2,21 +2,17 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
-	corev1 "github.com/kdubbo/xds-api/core/v1"
 	tlsv1 "github.com/kdubbo/xds-api/extensions/transport_sockets/tls/v1"
+	xdsresolver "github.com/kdubbo/xds-api/grpc/resolver"
 	listenerv1 "github.com/kdubbo/xds-api/listener/v1"
 	discovery "github.com/kdubbo/xds-api/service/discovery/v1"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -41,8 +37,8 @@ const (
 
 // InboundTLSConfig carries the resolved TLS decision for a server listener.
 type InboundTLSConfig struct {
-	Mode        TLSMode
-	Downstream  *tlsv1.DownstreamTlsContext // non-nil only when Mode == TLSModeMTLS
+	Mode       TLSMode
+	Downstream *tlsv1.DownstreamTlsContext // non-nil only when Mode == TLSModeMTLS
 }
 
 // Watcher subscribes to the xDS inbound listener for a given address and
@@ -51,8 +47,8 @@ type Watcher struct {
 	addr      string // e.g. "0.0.0.0:17070"
 	bootstrap string // path to grpc-bootstrap.json
 
-	mu     sync.Mutex
-	current *InboundTLSConfig
+	mu       sync.Mutex
+	current  *InboundTLSConfig
 	updateCh chan *InboundTLSConfig
 	closeCh  chan struct{}
 }
@@ -122,15 +118,17 @@ func (w *Watcher) run() {
 }
 
 func (w *Watcher) connect() {
-	serverURI, node, err := parseBootstrap(w.bootstrap)
+	bootstrap, err := xdsresolver.ParseBootstrap(w.bootstrap)
 	if err != nil {
 		log.Printf("[xds-server-watcher] failed to parse bootstrap: %v", err)
 		return
 	}
 
-	addr := serverURI
-	if strings.HasPrefix(addr, "unix://") {
-		addr = "unix:" + strings.TrimPrefix(addr, "unix://")
+	addr := xdsresolver.DialAddress(bootstrap.ServerURI)
+	dialOptions, err := xdsresolver.DialOptionsFromBootstrap(bootstrap)
+	if err != nil {
+		log.Printf("[xds-server-watcher] failed to build dial options from bootstrap: %v", err)
+		return
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -140,7 +138,7 @@ func (w *Watcher) connect() {
 	}()
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.DialContext(ctx, addr, dialOptions...)
 	if err != nil {
 		log.Printf("[xds-server-watcher] failed to dial %s: %v", addr, err)
 		return
@@ -159,7 +157,7 @@ func (w *Watcher) connect() {
 	// full pushes triggered by PeerAuthentication/DestinationRule changes as
 	// well as targeted pushes for our specific inbound listener.
 	if err := stream.Send(&discovery.DiscoveryRequest{
-		Node:          node,
+		Node:          bootstrap.Node,
 		TypeUrl:       listenerType,
 		ResourceNames: []string{listenerName},
 	}); err != nil {
@@ -183,7 +181,7 @@ func (w *Watcher) connect() {
 
 		// ACK while keeping the precise listener name subscription alive.
 		_ = stream.Send(&discovery.DiscoveryRequest{
-			Node:          node,
+			Node:          bootstrap.Node,
 			TypeUrl:       resp.TypeUrl,
 			VersionInfo:   resp.VersionInfo,
 			ResponseNonce: resp.Nonce,
@@ -258,49 +256,3 @@ func (w *Watcher) parseTLSFromLDS(resp *discovery.DiscoveryResponse, listenerNam
 		listenerName, len(resp.Resources))
 	return nil
 }
-
-// parseBootstrap extracts serverURI and Node from the bootstrap file.
-// Node is fully parsed (including metadata) so the control plane can
-// resolve ServiceTargets by pod IP when handling the inbound LDS request.
-func parseBootstrap(path string) (string, *corev1.Node, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", nil, fmt.Errorf("read %s: %w", path, err)
-	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return "", nil, fmt.Errorf("parse JSON: %w", err)
-	}
-	var serverURI string
-	if serversRaw, ok := raw["xds_servers"]; ok {
-		var servers []map[string]json.RawMessage
-		if err := json.Unmarshal(serversRaw, &servers); err == nil && len(servers) > 0 {
-			var uri string
-			if err := json.Unmarshal(servers[0]["server_uri"], &uri); err == nil {
-				serverURI = uri
-			}
-		}
-	}
-	if serverURI == "" {
-		return "", nil, fmt.Errorf("no xds_servers[0].server_uri in bootstrap")
-	}
-	var node *corev1.Node
-	if nodeRaw, ok := raw["node"]; ok {
-		n := &corev1.Node{}
-		if err := protojson.Unmarshal(nodeRaw, n); err == nil {
-			node = n
-		} else {
-			log.Printf("[xds-server-watcher] failed to protojson-unmarshal node: %v, falling back to id-only", err)
-			var m map[string]json.RawMessage
-			if err2 := json.Unmarshal(nodeRaw, &m); err2 == nil {
-				if idRaw, ok := m["id"]; ok {
-					var id string
-					_ = json.Unmarshal(idRaw, &id)
-					node = &corev1.Node{Id: id}
-				}
-			}
-		}
-	}
-	return serverURI, node, nil
-}
-

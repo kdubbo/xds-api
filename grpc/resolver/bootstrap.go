@@ -11,11 +11,19 @@ import (
 
 // BootstrapConfig holds parsed xDS bootstrap configuration.
 type BootstrapConfig struct {
-	ServerURI string
-	Node      *corev1.Node
+	ServerURI    string
+	ChannelCreds []ChannelCredsConfig
+	Node         *corev1.Node
 	// CertProviders maps provider instance name to file-watcher cert config.
 	// Key matches the instance_name in UpstreamTlsContext certificate_provider_instance.
 	CertProviders map[string]FileWatcherCertConfig
+}
+
+// ChannelCredsConfig holds the channel credentials for the xDS management
+// server declared in xds_servers[0].channel_creds.
+type ChannelCredsConfig struct {
+	Type   string
+	Config FileWatcherCertConfig
 }
 
 // FileWatcherCertConfig holds the resolved file paths for a certificate provider.
@@ -41,7 +49,7 @@ func ParseBootstrap(path string) (*BootstrapConfig, error) {
 		CertProviders: make(map[string]FileWatcherCertConfig),
 	}
 
-	// Parse xds_servers[0].server_uri
+	// Parse xds_servers[0].server_uri and xds_servers[0].channel_creds.
 	if serversRaw, ok := raw["xds_servers"]; ok {
 		var servers []map[string]json.RawMessage
 		if err := json.Unmarshal(serversRaw, &servers); err == nil && len(servers) > 0 {
@@ -49,6 +57,24 @@ func ParseBootstrap(path string) (*BootstrapConfig, error) {
 				var uri string
 				if err := json.Unmarshal(uriRaw, &uri); err == nil {
 					cfg.ServerURI = uri
+				}
+			}
+			if credsRaw, ok := servers[0]["channel_creds"]; ok {
+				var creds []struct {
+					Type   string          `json:"type"`
+					Config json.RawMessage `json:"config"`
+				}
+				if err := json.Unmarshal(credsRaw, &creds); err != nil {
+					return nil, fmt.Errorf("failed to parse xds_servers[0].channel_creds: %w", err)
+				}
+				for _, cred := range creds {
+					out := ChannelCredsConfig{Type: cred.Type}
+					if len(cred.Config) > 0 && string(cred.Config) != "null" {
+						if err := json.Unmarshal(cred.Config, &out.Config); err != nil {
+							return nil, fmt.Errorf("failed to parse xds_servers[0].channel_creds config: %w", err)
+						}
+					}
+					cfg.ChannelCreds = append(cfg.ChannelCreds, out)
 				}
 			}
 		}
@@ -62,6 +88,16 @@ func ParseBootstrap(path string) (*BootstrapConfig, error) {
 		node := &corev1.Node{}
 		if err := protojson.Unmarshal(nodeRaw, node); err == nil {
 			cfg.Node = node
+		} else {
+			var fallback map[string]json.RawMessage
+			if err := json.Unmarshal(nodeRaw, &fallback); err == nil {
+				if idRaw, ok := fallback["id"]; ok {
+					var id string
+					if err := json.Unmarshal(idRaw, &id); err == nil {
+						cfg.Node = &corev1.Node{Id: id}
+					}
+				}
+			}
 		}
 	}
 

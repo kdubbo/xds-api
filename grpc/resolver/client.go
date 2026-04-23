@@ -2,6 +2,8 @@ package resolver
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log"
 	"os"
@@ -10,6 +12,7 @@ import (
 	corev1 "github.com/kdubbo/xds-api/core/v1"
 	discovery "github.com/kdubbo/xds-api/service/discovery/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -25,15 +28,100 @@ type Client struct {
 // node is the Node parsed from the bootstrap file; if nil, a minimal node
 // is built from environment variables.
 func NewClient(ctx context.Context, serverURI string, node *corev1.Node) (*Client, error) {
-	// Strip unix:// prefix for grpc dial
-	addr := serverURI
-	if strings.HasPrefix(addr, "unix://") {
-		addr = "unix:" + strings.TrimPrefix(addr, "unix://")
-	}
+	return dialClient(ctx, DialAddress(serverURI), node, grpc.WithTransportCredentials(insecure.NewCredentials()))
+}
 
-	conn, err := grpc.DialContext(ctx, addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+// NewClientWithBootstrap dials the xDS management server using the bootstrap
+// server URI, node identity, and channel credentials.
+func NewClientWithBootstrap(ctx context.Context, bootstrap *BootstrapConfig) (*Client, error) {
+	if bootstrap == nil {
+		return nil, fmt.Errorf("bootstrap config is nil")
+	}
+	opts, err := DialOptionsFromBootstrap(bootstrap)
+	if err != nil {
+		return nil, err
+	}
+	return dialClient(ctx, DialAddress(bootstrap.ServerURI), bootstrap.Node, opts...)
+}
+
+// DialAddress converts a bootstrap server_uri into a grpc.Dial target.
+func DialAddress(serverURI string) string {
+	if strings.HasPrefix(serverURI, "unix://") {
+		return "unix:" + strings.TrimPrefix(serverURI, "unix://")
+	}
+	return serverURI
+}
+
+// DialOptionsFromBootstrap returns dial options for the xDS management server
+// using xds_servers[0].channel_creds.
+func DialOptionsFromBootstrap(bootstrap *BootstrapConfig) ([]grpc.DialOption, error) {
+	creds, err := TransportCredentialsFromBootstrap(bootstrap)
+	if err != nil {
+		return nil, err
+	}
+	return []grpc.DialOption{grpc.WithTransportCredentials(creds)}, nil
+}
+
+// TransportCredentialsFromBootstrap builds transport credentials for the xDS
+// management server connection from bootstrap channel_creds.
+func TransportCredentialsFromBootstrap(bootstrap *BootstrapConfig) (credentials.TransportCredentials, error) {
+	if bootstrap == nil {
+		return nil, fmt.Errorf("bootstrap config is nil")
+	}
+	if strings.HasPrefix(bootstrap.ServerURI, "unix://") {
+		return insecure.NewCredentials(), nil
+	}
+	for _, channelCreds := range bootstrap.ChannelCreds {
+		switch channelCreds.Type {
+		case "insecure":
+			return insecure.NewCredentials(), nil
+		case "tls":
+			cfg := channelCreds.Config
+			if cfg.isZero() {
+				cfg = bootstrap.CertProviders["default"]
+			}
+			tlsConfig, err := tlsConfigFromFileWatcher(cfg)
+			if err != nil {
+				return nil, err
+			}
+			return credentials.NewTLS(tlsConfig), nil
+		}
+	}
+	return insecure.NewCredentials(), nil
+}
+
+func tlsConfigFromFileWatcher(cfg FileWatcherCertConfig) (*tls.Config, error) {
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+	if cfg.CACertificateFile != "" {
+		rootPEM, err := os.ReadFile(cfg.CACertificateFile)
+		if err != nil {
+			return nil, fmt.Errorf("read xDS CA certificate %s: %w", cfg.CACertificateFile, err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(rootPEM) {
+			return nil, fmt.Errorf("parse xDS CA certificate %s: no certificates found", cfg.CACertificateFile)
+		}
+		tlsConfig.RootCAs = roots
+	}
+	if cfg.CertificateFile != "" || cfg.PrivateKeyFile != "" {
+		if cfg.CertificateFile == "" || cfg.PrivateKeyFile == "" {
+			return nil, fmt.Errorf("xDS TLS channel credentials require both certificate_file and private_key_file")
+		}
+		cert, err := tls.LoadX509KeyPair(cfg.CertificateFile, cfg.PrivateKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load xDS client certificate/key: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+	return tlsConfig, nil
+}
+
+func (c FileWatcherCertConfig) isZero() bool {
+	return c.CertificateFile == "" && c.PrivateKeyFile == "" && c.CACertificateFile == ""
+}
+
+func dialClient(ctx context.Context, addr string, node *corev1.Node, opts ...grpc.DialOption) (*Client, error) {
+	conn, err := grpc.DialContext(ctx, addr, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial xDS server %s: %w", addr, err)
 	}

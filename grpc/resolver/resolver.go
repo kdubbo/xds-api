@@ -9,13 +9,12 @@ import (
 	"sync"
 	"time"
 
-	corev1 "github.com/kdubbo/xds-api/core/v1"
 	clusterv1 "github.com/kdubbo/xds-api/cluster/v1"
 	endpointv1 "github.com/kdubbo/xds-api/endpoint/v1"
+	tlsv1 "github.com/kdubbo/xds-api/extensions/transport_sockets/tls/v1"
 	listenerv1 "github.com/kdubbo/xds-api/listener/v1"
 	routev1 "github.com/kdubbo/xds-api/route/v1"
 	discovery "github.com/kdubbo/xds-api/service/discovery/v1"
-	tlsv1 "github.com/kdubbo/xds-api/extensions/transport_sockets/tls/v1"
 	"google.golang.org/grpc/attributes"
 	"google.golang.org/grpc/resolver"
 
@@ -59,8 +58,7 @@ func (*xdsResolverBuilder) Build(target resolver.Target, cc resolver.ClientConn,
 	r := &xdsResolver{
 		target:                serviceName,
 		cc:                    cc,
-		serverURI:             bootstrap.ServerURI,
-		node:                  bootstrap.Node,
+		bootstrap:             bootstrap,
 		closeCh:               make(chan struct{}),
 		clusterWeights:        make(map[string]uint32),
 		clusterAddrs:          make(map[string][]resolver.Address),
@@ -75,20 +73,19 @@ func (*xdsResolverBuilder) Build(target resolver.Target, cc resolver.ClientConn,
 func (*xdsResolverBuilder) Scheme() string { return Scheme }
 
 type xdsResolver struct {
-	target          string
-	cc              resolver.ClientConn
-	serverURI       string
-	node            *corev1.Node
-	closeCh         chan struct{}
-	mu              sync.Mutex
-	client          *Client
+	target    string
+	cc        resolver.ClientConn
+	bootstrap *BootstrapConfig
+	closeCh   chan struct{}
+	mu        sync.Mutex
+	client    *Client
 	// cluster weight map from RDS: cluster_name -> weight
-	clusterWeights  map[string]uint32
+	clusterWeights map[string]uint32
 	// cluster endpoint map from EDS: cluster_name -> []Address
 	clusterAddrs    map[string][]resolver.Address
 	pendingClusters []string
 	// cluster TLS context from CDS: cluster_name -> UpstreamTlsContext (nil means plaintext)
-	clusterTLS      map[string]*tlsv1.UpstreamTlsContext
+	clusterTLS map[string]*tlsv1.UpstreamTlsContext
 	// clusterTLSFingerprint tracks a stable string fingerprint of each cluster's TLS state.
 	// Used to detect real TLS mode changes and avoid spurious EDS re-subscriptions.
 	clusterTLSFingerprint map[string]string
@@ -98,7 +95,7 @@ func (r *xdsResolver) watcher() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	client, err := NewClient(ctx, r.serverURI, r.node)
+	client, err := NewClientWithBootstrap(ctx, r.bootstrap)
 	if err != nil {
 		log.Printf("[xds-resolver] Failed to connect to xDS server: %v", err)
 		r.cc.ReportError(err)
@@ -598,4 +595,3 @@ func (r *xdsResolver) Close() {
 	log.Printf("[xds-resolver] Closing resolver for %s", r.target)
 	close(r.closeCh)
 }
- 
