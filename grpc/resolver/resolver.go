@@ -18,7 +18,6 @@ import (
 	"google.golang.org/grpc/attributes"
 	"google.golang.org/grpc/resolver"
 
-	xdscreds "github.com/kdubbo/xds-api/grpc/credentials"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -324,10 +323,9 @@ func (r *xdsResolver) updateClusterTLS(resp *discovery.DiscoveryResponse) ([]str
 	return resolved, tlsChanged
 }
 
-// TLSContextKey re-exports credentials.TLSContextKey so callers that only
-// import the resolver package can reference the same key type that
-// xdsDialCreds reads during ClientHandshake.
-type TLSContextKey = xdscreds.TLSContextKey
+// TLSContextKey is the resolver.Address Attributes key used to carry the
+// UpstreamTlsContext selected by CDS.
+type TLSContextKey struct{}
 
 // globalTLSIndex stores the latest TLS context per target URL for consumer lookup.
 // Key: xds target service name (e.g. "provider.grpc-app.svc.cluster.local:7070")
@@ -430,7 +428,7 @@ func (r *xdsResolver) buildWeightedAddresses() []resolver.Address {
 				tlsCtx := r.clusterTLS[cluster]
 				if tlsCtx != nil {
 					attrs = attrs.
-						WithValue(xdscreds.TLSContextKey{}, tlsCtx).
+						WithValue(TLSContextKey{}, tlsCtx).
 						WithValue(tlsFingerprintKey{}, r.clusterTLSFingerprint[cluster])
 				}
 				a.Attributes = attrs
@@ -480,7 +478,7 @@ func (r *xdsResolver) buildWeightedAddresses() []resolver.Address {
 			tlsCtx := r.clusterTLS[cluster]
 			if tlsCtx != nil {
 				attrs = attrs.
-					WithValue(xdscreds.TLSContextKey{}, tlsCtx).
+					WithValue(TLSContextKey{}, tlsCtx).
 					WithValue(tlsFingerprintKey{}, r.clusterTLSFingerprint[cluster])
 			}
 			a.Attributes = attrs
