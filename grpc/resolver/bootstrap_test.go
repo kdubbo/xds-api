@@ -1,9 +1,18 @@
 package resolver
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	tlsv1 "github.com/kdubbo/xds-api/extensions/transport_sockets/tls/v1"
 )
 
 func TestParseBootstrapReadsManagementServerChannelCreds(t *testing.T) {
@@ -120,4 +129,111 @@ func TestDialAddress(t *testing.T) {
 	if got, want := DialAddress("dubbod.dubbo-system.svc:15012"), "dubbod.dubbo-system.svc:15012"; got != want {
 		t.Fatalf("DialAddress() = %q, want %q", got, want)
 	}
+}
+
+func TestDataPlaneTLSConfigFromBootstrapUsesCDSContext(t *testing.T) {
+	dir := t.TempDir()
+	rootDER, rootPEM, rootKey := newTestCA(t)
+	leafDER, leafPEM, leafKeyPEM := newTestLeaf(t, rootDER, rootKey)
+
+	certFile := filepath.Join(dir, "cert-chain.pem")
+	keyFile := filepath.Join(dir, "key.pem")
+	rootFile := filepath.Join(dir, "root-cert.pem")
+	for path, data := range map[string][]byte{
+		certFile: leafPEM,
+		keyFile:  leafKeyPEM,
+		rootFile: rootPEM,
+	} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	cfg, err := DataPlaneTLSConfigFromBootstrap(&BootstrapConfig{
+		CertProviders: map[string]FileWatcherCertConfig{
+			"default": {
+				CertificateFile:   certFile,
+				PrivateKeyFile:    keyFile,
+				CACertificateFile: rootFile,
+			},
+		},
+	}, &tlsv1.UpstreamTlsContext{
+		Sni: "nginx.app.svc.cluster.local",
+		CommonTlsContext: &tlsv1.CommonTlsContext{
+			AlpnProtocols: []string{"h2"},
+			TlsCertificateCertificateProviderInstance: &tlsv1.CommonTlsContext_CertificateProviderInstance{
+				InstanceName: "default",
+			},
+			ValidationContextType: &tlsv1.CommonTlsContext_CombinedValidationContext{
+				CombinedValidationContext: &tlsv1.CommonTlsContext_CombinedCertificateValidationContext{
+					ValidationContextCertificateProviderInstance: &tlsv1.CommonTlsContext_CertificateProviderInstance{
+						InstanceName: "default",
+					},
+				},
+			},
+		},
+	}, "fallback.invalid:443")
+	if err != nil {
+		t.Fatalf("DataPlaneTLSConfigFromBootstrap() failed: %v", err)
+	}
+	if cfg.ServerName != "nginx.app.svc.cluster.local" {
+		t.Fatalf("ServerName = %q, want nginx host", cfg.ServerName)
+	}
+	if len(cfg.Certificates) != 1 {
+		t.Fatalf("certificates = %d, want 1", len(cfg.Certificates))
+	}
+	if len(cfg.NextProtos) != 1 || cfg.NextProtos[0] != "h2" {
+		t.Fatalf("NextProtos = %v, want [h2]", cfg.NextProtos)
+	}
+	if err := cfg.VerifyPeerCertificate([][]byte{leafDER}, nil); err != nil {
+		t.Fatalf("VerifyPeerCertificate() failed: %v", err)
+	}
+}
+
+func newTestCA(t *testing.T) ([]byte, []byte, *rsa.PrivateKey) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() failed: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-root"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate(root) failed: %v", err)
+	}
+	return der, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), key
+}
+
+func newTestLeaf(t *testing.T, rootDER []byte, rootKey *rsa.PrivateKey) ([]byte, []byte, []byte) {
+	t.Helper()
+	root, err := x509.ParseCertificate(rootDER)
+	if err != nil {
+		t.Fatalf("ParseCertificate(root) failed: %v", err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() failed: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "test-leaf"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, root, &key.PublicKey, rootKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate(leaf) failed: %v", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	return der, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), keyPEM
 }

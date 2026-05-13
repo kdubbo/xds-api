@@ -6,10 +6,12 @@ import (
 	"crypto/x509"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
 
 	corev1 "github.com/kdubbo/xds-api/core/v1"
+	tlsv1 "github.com/kdubbo/xds-api/extensions/transport_sockets/tls/v1"
 	discovery "github.com/kdubbo/xds-api/service/discovery/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -114,6 +116,115 @@ func tlsConfigFromFileWatcher(cfg FileWatcherCertConfig) (*tls.Config, error) {
 		tlsConfig.Certificates = []tls.Certificate{cert}
 	}
 	return tlsConfig, nil
+}
+
+// DataPlaneTLSConfigFromBootstrap builds the outbound data-plane TLS config
+// selected by a CDS UpstreamTlsContext.
+func DataPlaneTLSConfigFromBootstrap(bootstrap *BootstrapConfig, upstream *tlsv1.UpstreamTlsContext, authority string) (*tls.Config, error) {
+	if bootstrap == nil {
+		return nil, fmt.Errorf("bootstrap config is nil")
+	}
+	if upstream == nil {
+		return nil, fmt.Errorf("upstream TLS context is nil")
+	}
+	certProvider, rootProvider, err := fileWatcherConfigsForUpstreamTLS(bootstrap, upstream)
+	if err != nil {
+		return nil, err
+	}
+	if certProvider.CertificateFile == "" || certProvider.PrivateKeyFile == "" {
+		return nil, fmt.Errorf("data-plane mTLS requires certificate_file and private_key_file")
+	}
+	if rootProvider.CACertificateFile == "" {
+		return nil, fmt.Errorf("data-plane mTLS requires ca_certificate_file")
+	}
+
+	cert, err := tls.LoadX509KeyPair(certProvider.CertificateFile, certProvider.PrivateKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load data-plane client certificate/key: %w", err)
+	}
+	rootPEM, err := os.ReadFile(rootProvider.CACertificateFile)
+	if err != nil {
+		return nil, fmt.Errorf("read data-plane CA certificate %s: %w", rootProvider.CACertificateFile, err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(rootPEM) {
+		return nil, fmt.Errorf("parse data-plane CA certificate %s: no certificates found", rootProvider.CACertificateFile)
+	}
+
+	serverName := upstream.Sni
+	if serverName == "" {
+		serverName = hostOnly(authority)
+	}
+	cfg := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         serverName,
+		Certificates:       []tls.Certificate{cert},
+		RootCAs:            roots,
+		InsecureSkipVerify: true, // VerifyPeerCertificate performs CA-chain validation for SPIFFE URI SAN certs.
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			return verifyPeerCertificateChain(rawCerts, roots)
+		},
+	}
+	if common := upstream.GetCommonTlsContext(); common != nil {
+		cfg.NextProtos = append([]string(nil), common.AlpnProtocols...)
+	}
+	return cfg, nil
+}
+
+func fileWatcherConfigsForUpstreamTLS(bootstrap *BootstrapConfig, upstream *tlsv1.UpstreamTlsContext) (FileWatcherCertConfig, FileWatcherCertConfig, error) {
+	common := upstream.GetCommonTlsContext()
+	certInstance := "default"
+	rootInstance := "default"
+	if common != nil {
+		if cert := common.GetTlsCertificateCertificateProviderInstance(); cert != nil && cert.InstanceName != "" {
+			certInstance = cert.InstanceName
+		}
+		if combined := common.GetCombinedValidationContext(); combined != nil {
+			if root := combined.GetValidationContextCertificateProviderInstance(); root != nil && root.InstanceName != "" {
+				rootInstance = root.InstanceName
+			}
+		}
+	}
+
+	certProvider, ok := bootstrap.CertProviders[certInstance]
+	if !ok {
+		return FileWatcherCertConfig{}, FileWatcherCertConfig{}, fmt.Errorf("certificate_providers[%q] not found", certInstance)
+	}
+	rootProvider, ok := bootstrap.CertProviders[rootInstance]
+	if !ok {
+		return FileWatcherCertConfig{}, FileWatcherCertConfig{}, fmt.Errorf("certificate_providers[%q] not found", rootInstance)
+	}
+	return certProvider, rootProvider, nil
+}
+
+func verifyPeerCertificateChain(rawCerts [][]byte, roots *x509.CertPool) error {
+	if len(rawCerts) == 0 {
+		return fmt.Errorf("peer presented no certificate")
+	}
+	leaf, err := x509.ParseCertificate(rawCerts[0])
+	if err != nil {
+		return fmt.Errorf("parse peer certificate: %w", err)
+	}
+	intermediates := x509.NewCertPool()
+	for _, raw := range rawCerts[1:] {
+		cert, err := x509.ParseCertificate(raw)
+		if err != nil {
+			return fmt.Errorf("parse intermediate certificate: %w", err)
+		}
+		intermediates.AddCert(cert)
+	}
+	_, err = leaf.Verify(x509.VerifyOptions{
+		Roots:         roots,
+		Intermediates: intermediates,
+	})
+	return err
+}
+
+func hostOnly(authority string) string {
+	if host, _, err := net.SplitHostPort(authority); err == nil {
+		return host
+	}
+	return authority
 }
 
 func (c FileWatcherCertConfig) isZero() bool {
