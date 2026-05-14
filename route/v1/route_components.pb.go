@@ -383,6 +383,7 @@ type HeaderMatcher struct {
 	// Types that are valid to be assigned to HeaderMatchSpecifier:
 	//
 	//	*HeaderMatcher_ExactMatch
+	//	*HeaderMatcher_PrefixMatch
 	//	*HeaderMatcher_SafeRegexMatch
 	HeaderMatchSpecifier isHeaderMatcher_HeaderMatchSpecifier `protobuf_oneof:"header_match_specifier"`
 	unknownFields        protoimpl.UnknownFields
@@ -442,6 +443,15 @@ func (x *HeaderMatcher) GetExactMatch() string {
 	return ""
 }
 
+func (x *HeaderMatcher) GetPrefixMatch() string {
+	if x != nil {
+		if x, ok := x.HeaderMatchSpecifier.(*HeaderMatcher_PrefixMatch); ok {
+			return x.PrefixMatch
+		}
+	}
+	return ""
+}
+
 func (x *HeaderMatcher) GetSafeRegexMatch() *v1.RegexMatcher {
 	if x != nil {
 		if x, ok := x.HeaderMatchSpecifier.(*HeaderMatcher_SafeRegexMatch); ok {
@@ -459,11 +469,17 @@ type HeaderMatcher_ExactMatch struct {
 	ExactMatch string `protobuf:"bytes,4,opt,name=exact_match,json=exactMatch,proto3,oneof"`
 }
 
+type HeaderMatcher_PrefixMatch struct {
+	PrefixMatch string `protobuf:"bytes,9,opt,name=prefix_match,json=prefixMatch,proto3,oneof"`
+}
+
 type HeaderMatcher_SafeRegexMatch struct {
 	SafeRegexMatch *v1.RegexMatcher `protobuf:"bytes,11,opt,name=safe_regex_match,json=safeRegexMatch,proto3,oneof"`
 }
 
 func (*HeaderMatcher_ExactMatch) isHeaderMatcher_HeaderMatchSpecifier() {}
+
+func (*HeaderMatcher_PrefixMatch) isHeaderMatcher_HeaderMatchSpecifier() {}
 
 func (*HeaderMatcher_SafeRegexMatch) isHeaderMatcher_HeaderMatchSpecifier() {}
 
@@ -640,11 +656,12 @@ const file_route_v1_route_components_proto_rawDesc = "" +
 	"safe_regex\x18\n" +
 	" \x01(\v2\x1d.type.matcher.v1.RegexMatcherH\x00R\tsafeRegex\x121\n" +
 	"\aheaders\x18\x06 \x03(\v2\x17.route.v1.HeaderMatcherR\aheadersB\x10\n" +
-	"\x0epath_specifier\"\xab\x01\n" +
+	"\x0epath_specifier\"\xd0\x01\n" +
 	"\rHeaderMatcher\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\vexact_match\x18\x04 \x01(\tH\x00R\n" +
-	"exactMatch\x12I\n" +
+	"exactMatch\x12#\n" +
+	"\fprefix_match\x18\t \x01(\tH\x00R\vprefixMatch\x12I\n" +
 	"\x10safe_regex_match\x18\v \x01(\v2\x1d.type.matcher.v1.RegexMatcherH\x00R\x0esafeRegexMatchB\x18\n" +
 	"\x16header_match_specifier\"\x88\x01\n" +
 	"\vRouteAction\x12\x1a\n" +
@@ -712,6 +729,7 @@ func file_route_v1_route_components_proto_init() {
 	}
 	file_route_v1_route_components_proto_msgTypes[5].OneofWrappers = []any{
 		(*HeaderMatcher_ExactMatch)(nil),
+		(*HeaderMatcher_PrefixMatch)(nil),
 		(*HeaderMatcher_SafeRegexMatch)(nil),
 	}
 	file_route_v1_route_components_proto_msgTypes[6].OneofWrappers = []any{
