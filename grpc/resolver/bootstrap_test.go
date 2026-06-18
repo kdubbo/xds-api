@@ -32,6 +32,12 @@ func TestParseBootstrapReadsManagementServerChannelCreds(t *testing.T) {
     "server_features": ["xds_v3"]
   }],
   "node": {"id": "proxyless~10.0.0.1~client.app~app.svc.cluster.local"},
+  "dubbo_grpc_keepalive": {
+    "enabled": true,
+    "time": "30s",
+    "timeout": "10s",
+    "permit_without_stream": true
+  },
   "certificate_providers": {
     "default": {
       "plugin_name": "file_watcher",
@@ -68,6 +74,58 @@ func TestParseBootstrapReadsManagementServerChannelCreds(t *testing.T) {
 	}
 	if got, want := cfg.CertProviders["default"].CertificateFile, "/etc/dubbo/proxy/cert-chain.pem"; got != want {
 		t.Fatalf("default cert provider certificate = %q, want %q", got, want)
+	}
+	if cfg.Keepalive == nil {
+		t.Fatalf("keepalive config = nil, want parsed config")
+	}
+	if !cfg.Keepalive.Enabled {
+		t.Fatalf("keepalive enabled = false, want true")
+	}
+	if got, want := cfg.Keepalive.Time, "30s"; got != want {
+		t.Fatalf("keepalive time = %q, want %q", got, want)
+	}
+	if got, want := cfg.Keepalive.Timeout, "10s"; got != want {
+		t.Fatalf("keepalive timeout = %q, want %q", got, want)
+	}
+	if !cfg.Keepalive.PermitWithoutStream {
+		t.Fatalf("keepalive permit_without_stream = false, want true")
+	}
+}
+
+func TestDialOptionsFromBootstrapConsumesKeepalive(t *testing.T) {
+	opts, err := DialOptionsFromBootstrap(&BootstrapConfig{
+		ServerURI: "dubbod.dubbo-system.svc:26012",
+		ChannelCreds: []ChannelCredsConfig{{
+			Type: "insecure",
+		}},
+		Keepalive: &KeepaliveConfig{
+			Enabled:             true,
+			Time:                "30s",
+			Timeout:             "10s",
+			PermitWithoutStream: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("DialOptionsFromBootstrap() failed: %v", err)
+	}
+	if got, want := len(opts), 2; got != want {
+		t.Fatalf("dial option count = %d, want %d", got, want)
+	}
+}
+
+func TestDialOptionsFromBootstrapRejectsInvalidKeepalive(t *testing.T) {
+	_, err := DialOptionsFromBootstrap(&BootstrapConfig{
+		ServerURI: "dubbod.dubbo-system.svc:26012",
+		ChannelCreds: []ChannelCredsConfig{{
+			Type: "insecure",
+		}},
+		Keepalive: &KeepaliveConfig{
+			Enabled: true,
+			Time:    "bad",
+		},
+	})
+	if err == nil {
+		t.Fatalf("DialOptionsFromBootstrap() error = nil, want invalid keepalive error")
 	}
 }
 

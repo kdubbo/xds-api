@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	corev1 "github.com/kdubbo/xds-api/core/v1"
 	tlsv1 "github.com/kdubbo/xds-api/extensions/transport_sockets/tls/v1"
@@ -16,6 +17,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
+)
+
+const (
+	defaultKeepaliveTime    = 30 * time.Second
+	defaultKeepaliveTimeout = 10 * time.Second
 )
 
 // Client is a minimal xDS ADS client backed by xds-api types.
@@ -61,7 +68,43 @@ func DialOptionsFromBootstrap(bootstrap *BootstrapConfig) ([]grpc.DialOption, er
 	if err != nil {
 		return nil, err
 	}
-	return []grpc.DialOption{grpc.WithTransportCredentials(creds)}, nil
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
+	if keepaliveOpt, ok, err := keepaliveDialOption(bootstrap.Keepalive); err != nil {
+		return nil, err
+	} else if ok {
+		opts = append(opts, keepaliveOpt)
+	}
+	return opts, nil
+}
+
+func keepaliveDialOption(cfg *KeepaliveConfig) (grpc.DialOption, bool, error) {
+	if cfg == nil || !cfg.Enabled {
+		return nil, false, nil
+	}
+	interval, err := parseKeepaliveDuration("time", cfg.Time, defaultKeepaliveTime)
+	if err != nil {
+		return nil, false, err
+	}
+	timeout, err := parseKeepaliveDuration("timeout", cfg.Timeout, defaultKeepaliveTimeout)
+	if err != nil {
+		return nil, false, err
+	}
+	return grpc.WithKeepaliveParams(keepalive.ClientParameters{
+		Time:                interval,
+		Timeout:             timeout,
+		PermitWithoutStream: cfg.PermitWithoutStream,
+	}), true, nil
+}
+
+func parseKeepaliveDuration(name, value string, fallback time.Duration) (time.Duration, error) {
+	if strings.TrimSpace(value) == "" {
+		return fallback, nil
+	}
+	out, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse dubbo_grpc_keepalive.%s %q: %w", name, value, err)
+	}
+	return out, nil
 }
 
 // TransportCredentialsFromBootstrap builds transport credentials for the xDS
