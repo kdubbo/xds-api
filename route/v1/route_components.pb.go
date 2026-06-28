@@ -11,7 +11,7 @@ import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	_ "google.golang.org/protobuf/types/known/anypb"
-	_ "google.golang.org/protobuf/types/known/durationpb"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	wrapperspb "google.golang.org/protobuf/types/known/wrapperspb"
 	reflect "reflect"
 	sync "sync"
@@ -490,6 +490,7 @@ type RouteAction struct {
 	//	*RouteAction_Cluster
 	//	*RouteAction_WeightedClusters
 	ClusterSpecifier isRouteAction_ClusterSpecifier `protobuf_oneof:"cluster_specifier"`
+	Timeout          *durationpb.Duration           `protobuf:"bytes,4,opt,name=timeout,proto3" json:"timeout,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -545,6 +546,13 @@ func (x *RouteAction) GetWeightedClusters() *WeightedCluster {
 		if x, ok := x.ClusterSpecifier.(*RouteAction_WeightedClusters); ok {
 			return x.WeightedClusters
 		}
+	}
+	return nil
+}
+
+func (x *RouteAction) GetTimeout() *durationpb.Duration {
+	if x != nil {
+		return x.Timeout
 	}
 	return nil
 }
@@ -663,10 +671,11 @@ const file_route_v1_route_components_proto_rawDesc = "" +
 	"exactMatch\x12#\n" +
 	"\fprefix_match\x18\t \x01(\tH\x00R\vprefixMatch\x12I\n" +
 	"\x10safe_regex_match\x18\v \x01(\v2\x1d.type.matcher.v1.RegexMatcherH\x00R\x0esafeRegexMatchB\x18\n" +
-	"\x16header_match_specifier\"\x88\x01\n" +
+	"\x16header_match_specifier\"\xbd\x01\n" +
 	"\vRouteAction\x12\x1a\n" +
 	"\acluster\x18\x01 \x01(\tH\x00R\acluster\x12H\n" +
-	"\x11weighted_clusters\x18\x03 \x01(\v2\x19.route.v1.WeightedClusterH\x00R\x10weightedClustersB\x13\n" +
+	"\x11weighted_clusters\x18\x03 \x01(\v2\x19.route.v1.WeightedClusterH\x00R\x10weightedClusters\x123\n" +
+	"\atimeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\atimeoutB\x13\n" +
 	"\x11cluster_specifierB,Z*github.com/kdubbo/xds-api/route/v1;routev1b\x06proto3"
 
 var (
@@ -693,6 +702,7 @@ var file_route_v1_route_components_proto_goTypes = []any{
 	(*WeightedCluster_ClusterWeight)(nil), // 7: route.v1.WeightedCluster.ClusterWeight
 	(*wrapperspb.UInt32Value)(nil),        // 8: google.protobuf.UInt32Value
 	(*v1.RegexMatcher)(nil),               // 9: type.matcher.v1.RegexMatcher
+	(*durationpb.Duration)(nil),           // 10: google.protobuf.Duration
 }
 var file_route_v1_route_components_proto_depIdxs = []int32{
 	1,  // 0: route.v1.VirtualHost.routes:type_name -> route.v1.Route
@@ -705,12 +715,13 @@ var file_route_v1_route_components_proto_depIdxs = []int32{
 	5,  // 7: route.v1.RouteMatch.headers:type_name -> route.v1.HeaderMatcher
 	9,  // 8: route.v1.HeaderMatcher.safe_regex_match:type_name -> type.matcher.v1.RegexMatcher
 	3,  // 9: route.v1.RouteAction.weighted_clusters:type_name -> route.v1.WeightedCluster
-	8,  // 10: route.v1.WeightedCluster.ClusterWeight.weight:type_name -> google.protobuf.UInt32Value
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	10, // 10: route.v1.RouteAction.timeout:type_name -> google.protobuf.Duration
+	8,  // 11: route.v1.WeightedCluster.ClusterWeight.weight:type_name -> google.protobuf.UInt32Value
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_route_v1_route_components_proto_init() }

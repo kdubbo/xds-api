@@ -59,4 +59,5 @@ message RouteAction {
     string cluster = 1;
     WeightedCluster weighted_clusters = 3;
   }
+  google.protobuf.Duration timeout = 4;
 }
