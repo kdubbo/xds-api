@@ -203,13 +203,10 @@ func (r *xdsResolver) watcher() {
 					"waiting for DestinationRule (pending: %v)", r.pendingClusters)
 				continue
 			}
-			// Only re-subscribe to EDS when TLS state actually changed.
-			// Spurious CDS pushes (same TLS mode) must not trigger a new EDS
-			// subscribe, which would cause the control plane to re-push EDS,
-			// triggering UpdateState with a new *UpstreamTlsContext pointer and
-			// unnecessary SubConn churn.
-			if tlsChanged {
-				log.Printf("[xds-resolver] CDS TLS state changed, re-subscribing to EDS for: %v", edsClusters)
+			// Re-subscribe on first resolution for a cluster, or when TLS changes.
+			// Repeated identical CDS pushes still skip EDS to avoid SubConn churn.
+			if tlsChanged || r.needsEndpointSubscription(edsClusters) {
+				log.Printf("[xds-resolver] CDS requires EDS subscribe for: %v", edsClusters)
 				if err := client.Subscribe(endpointType, edsClusters); err != nil {
 					log.Printf("[xds-resolver] Failed to subscribe to EDS: %v", err)
 				}
@@ -321,6 +318,17 @@ func (r *xdsResolver) updateClusterTLS(resp *discovery.DiscoveryResponse) ([]str
 	globalTLSMu.Unlock()
 
 	return resolved, tlsChanged
+}
+
+func (r *xdsResolver) needsEndpointSubscription(clusters []string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, cluster := range clusters {
+		if _, found := r.clusterAddrs[cluster]; !found {
+			return true
+		}
+	}
+	return false
 }
 
 // TLSContextKey is the resolver.Address Attributes key used to carry the
